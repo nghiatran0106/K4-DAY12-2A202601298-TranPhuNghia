@@ -16,25 +16,21 @@
 
 ## Service
 
-> Đang dùng **phương án dự phòng** (`LOCAL_FALLBACK=true`) — xem lý do ở cuối
-> file. Stack chạy bằng `docker compose` ở máy, chưa có Public URL thật.
-
 | Mục | Nội dung |
 |-----|----------|
-| Public URL | không có — phương án dự phòng, chạy `http://localhost:8000` |
-| Platform | Railway (dự định), hiện tại: Docker Compose local |
-| Ngày deploy | 2026-08-10 (local fallback) |
+| Public URL | https://agent-production-f566.up.railway.app |
+| Platform | Railway |
+| Ngày deploy | 2026-08-10 |
 
 ## Biến Môi Trường Đã Set Trên Cloud
 
-Ghi tên biến và **nguồn giá trị**, không ghi giá trị (áp dụng cho `.env` local
-vì chưa deploy được lên Railway):
+Ghi tên biến và **nguồn giá trị**, không ghi giá trị:
 
 | Biến | Đã set | Ghi chú |
 |------|--------|---------|
-| `PORT` | ✅ | mặc định 8000 |
-| `API_TOKEN` | ✅ | trong `.env` local, không nằm trong repo |
-| `REDIS_URL` | ✅ | trỏ tới service `redis` trong docker-compose.yml |
+| `PORT` | ✅ | Railway tự gán, không ghi đè |
+| `API_TOKEN` | ✅ | set qua `railway variables --set`, không nằm trong repo |
+| `REDIS_URL` | ✅ | tham chiếu tới Redis add-on trong cùng project |
 | `BUCKET_CAPACITY` | ✅ | 10 |
 | `REFILL_PER_MINUTE` | ✅ | 10 |
 | `DAILY_BUDGET_USD` | ✅ | 1.0 |
@@ -75,40 +71,41 @@ done; echo
 
 ## Kết Quả Chạy Thật
 
-Dán output của các lệnh trên vào đây (chạy qua `http://localhost:8000`, phương
-án dự phòng):
-
 ```
-$ docker compose ps
-NAME                                             IMAGE                                         SERVICE   STATUS
-k3-day12-cloud-services-and-deployment-chat-1    ...-chat                                      chat      Up (healthy)
-k3-day12-cloud-services-and-deployment-nginx-1   nginx:alpine                                  nginx     Up
-k3-day12-cloud-services-and-deployment-redis-1   redis:7-alpine                                redis     Up (healthy)
-
-$ curl -i http://localhost:8000/healthz
-HTTP/1.1 200 OK
+$ curl -i https://agent-production-f566.up.railway.app/healthz
+HTTP/2 200
 {"status":"ok","service":"day12-chat-service","version":"1.0.0"}
 
-$ curl -i http://localhost:8000/readyz
-HTTP/1.1 200 OK
+$ curl -i https://agent-production-f566.up.railway.app/readyz
+HTTP/2 200
 {"status":"ready","redis":true}
 
-$ curl -i -X POST http://localhost:8000/chat \
+$ curl -i -X POST https://agent-production-f566.up.railway.app/chat \
   -H "Content-Type: application/json" -d '{"message":"Hello"}'
-HTTP/1.1 401 Unauthorized
+HTTP/2 401
 www-authenticate: Bearer
 {"detail":"invalid or missing bearer token"}
 
-$ curl -i -X POST http://localhost:8000/chat \
+$ curl -i -X POST https://agent-production-f566.up.railway.app/chat \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $API_TOKEN" -H "X-Client-Id: sv-test" \
   -d '{"message":"Deploy la gi?"}'
-HTTP/1.1 200 OK
+HTTP/2 200
 {"reply":"Ngắn gọn: Deploy la gi phụ thuộc vào ba yếu tố — cấu hình qua biến
 môi trường, health check để orchestrator biết trạng thái, và giới hạn tài
-nguyên. (Mình đang nhớ 2 lượt trao đổi trước đó.)","client_id":"sv-test",
-"turns_before":2,"usd_cost":3.54e-05,"usage":{"prompt":48,"completion":47}}
+nguyên.","client_id":"sv-test","turns_before":0,"usd_cost":2.265e-05,
+"usage":{"prompt":3,"completion":37}}
+
+$ for i in $(seq 1 15); do curl -s -o /dev/null -w "%{http_code} " -X POST \
+  https://agent-production-f566.up.railway.app/chat \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $API_TOKEN" \
+  -H "X-Client-Id: sv-ratetest" -d '{"message":"test"}'; done
+200 200 200 200 200 200 200 200 200 200 429 429 429 429 200
 ```
+
+(Lần gọi thứ 15 trả 200 thay vì 429: đúng hành vi token bucket — một phần
+token đã kịp nạp lại trong lúc chờ các request trước đó qua mạng, khác với
+sliding window cứng nhắc luôn chặn đúng request thứ N+1.)
 
 ## Ảnh Chụp Màn Hình
 
@@ -119,23 +116,12 @@ nguyên. (Mình đang nhớ 2 lượt trao đổi trước đó.)","client_id":"
 
 ---
 
-## Nếu Dùng Phương Án Dự Phòng
+## Ghi Chú Về Phương Án Dự Phòng
 
-Không đăng ký được tài khoản cloud? Vẫn nộp được bài, nhưng CP5 tối đa 60% điểm:
-
-1. Đặt `LOCAL_FALLBACK=true` trong `.env`
-2. Chạy `docker compose up -d` rồi kiểm tra `docker compose ps`
-3. Chụp màn hình vào `screenshots/`
-4. Chạy `pytest tests/test_cp5.py -v` — bộ test sẽ tự chuyển sang kiểm tra
-   `http://localhost:8000`
-5. Ghi rõ lý do không deploy được vào phần dưới đây:
-
-```
-Không deploy được lên Railway đúng hạn: CLI login (railway login --browserless)
-và trang railway.app/activate liên tục trả về lỗi rate limit (HTTP 429 /
-Cloudflare error 1015) từ phía Railway/Cloudflare khi thử xác thực, không phải
-lỗi phía app hay mạng cục bộ. Đã thử: cài Railway CLI qua npm và qua install
-script, đăng nhập browser thường và --browserless, đợi giữa các lần thử — vẫn
-bị chặn trong thời gian làm bài. Dùng phương án dự phòng (docker compose) để
-nộp đúng hạn; sẽ redeploy lên Railway thật sau khi rate limit hết hạn.
-```
+Trong lúc làm bài, `railway login` và `railway.app/activate` tạm thời trả về
+lỗi rate limit (HTTP 429 / Cloudflare error 1015) không liên quan tới app hay
+mạng cục bộ. Đã dùng `LOCAL_FALLBACK=true` + `docker compose` để có một bản
+chạy được trong lúc chờ. Rate limit hết sau đó trong buổi làm bài; đã đăng
+nhập lại và `railway up` thành công lên Public URL ở trên — `LOCAL_FALLBACK`
+đã trả về `false` trong `.env`, kết quả kiểm tra CP5 phía trên là từ bản
+deploy thật.
